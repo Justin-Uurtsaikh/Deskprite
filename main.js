@@ -17,6 +17,7 @@ const {
   wrappedPosition: wrapPositionInArea,
   friendlyErrorMessage,
 } = require('./src/core');
+const { cleanPetName, cleanPetUpdates } = require('./src/pet-settings');
 
 const MAX_PETS = 30;
 const PET_ID = /^pet-[a-f0-9-]{20,}$/i;
@@ -25,8 +26,13 @@ const APP_NAME = 'Deskprite';
 const STORE_FILE_NAME = 'deskprite-pets.json';
 const LEGACY_APP_NAME = ['Desk', 'Buddy'].join('');
 const LEGACY_STORE_FILE_NAME = ['desk', 'buddy-pets.json'].join('');
+const TEST_USER_DATA_PATH = process.env.DESKPRITE_TEST_USER_DATA;
 
 app.setName(APP_NAME);
+if (!app.isPackaged && TEST_USER_DATA_PATH && path.isAbsolute(TEST_USER_DATA_PATH)) {
+  app.setPath('userData', TEST_USER_DATA_PATH);
+}
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 let creatorWindow = null;
 let tray = null;
@@ -34,6 +40,7 @@ let quitting = false;
 let corruptStoreBackup = null;
 const petWindows = new Map();
 const openingPetWindows = new Map();
+const petWindowVisibility = new WeakMap();
 const dragOrigins = new Map();
 const glideTimers = new Map();
 const positionTimers = new Map();
@@ -173,11 +180,6 @@ function validPetId(id) {
   return typeof id === 'string' && PET_ID.test(id);
 }
 
-function cleanName(value) {
-  const name = String(value || '').replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
-  return name.slice(0, 36) || 'New buddy';
-}
-
 function imageExtension(mimeType) {
   return { 'image/png': 'png' }[mimeType];
 }
@@ -261,6 +263,7 @@ async function publicPet(pet, imageMode = 'full') {
     name: pet.name,
     size: normalizePetSize(pet.size),
     motion: pet.motion === 'still' ? 'still' : 'wander',
+    shown: pet.shown !== false,
     createdAt: pet.createdAt,
   };
   if (imageMode !== 'none') {
@@ -511,11 +514,64 @@ async function persistOpenPetPositions() {
 }
 
 function setPetShown(petId, shown) {
+  const window = petWindows.get(petId);
+  const hadWindowState = Boolean(window) && petWindowVisibility.has(window);
+  const previousWindowState = window ? petWindowVisibility.get(window) : undefined;
+  if (window) petWindowVisibility.set(window, Boolean(shown));
   return changeStore((store) => {
     const pet = store.pets.find((item) => item.id === petId);
     if (!pet) throw new Error('That buddy could not be found.');
     pet.shown = Boolean(shown);
+  }).catch((error) => {
+    if (window) {
+      if (hadWindowState) petWindowVisibility.set(window, previousWindowState);
+      else petWindowVisibility.delete(window);
+    }
+    throw error;
   });
+}
+
+function resizePetWindow(window, pet) {
+  const size = petWindowSize(pet);
+  const bounds = window.getBounds();
+  if (bounds.width === size && bounds.height === size) return false;
+
+  const position = clampedPosition(
+    bounds.x + Math.round((bounds.width - size) / 2),
+    bounds.y + Math.round((bounds.height - size) / 2),
+    pet,
+  );
+  if (size > Math.max(bounds.width, bounds.height)) {
+    window.setMaximumSize(size, size);
+  } else {
+    window.setMinimumSize(size, size);
+  }
+  window.setBounds({ x: position.x, y: position.y, width: size, height: size }, false);
+  window.setMinimumSize(size, size);
+  window.setMaximumSize(size, size);
+  return true;
+}
+
+async function applyPetUpdatesToOpenWindow(pet) {
+  const opening = openingPetWindows.get(pet.id);
+  if (opening) await opening;
+
+  const window = petWindows.get(pet.id);
+  if (!window || window.isDestroyed()) return;
+
+  stopGlide(pet.id);
+  dragOrigins.delete(pet.id);
+  recentWanderDirections.delete(pet.id);
+  clearTimeout(positionTimers.get(pet.id));
+  positionTimers.delete(pet.id);
+  if (resizePetWindow(window, pet)) schedulePositionSave(pet.id, window);
+  if (!window.webContents.isDestroyed()) {
+    try {
+      await window.loadFile(path.join(__dirname, 'src', 'pet.html'), { query: { petId: pet.id } });
+    } catch {
+      throw new Error(ERROR_MESSAGES.generic);
+    }
+  }
 }
 
 async function removePetAsset(pet) {
@@ -612,8 +668,11 @@ async function createPetWindow(id) {
   window.setAlwaysOnTop(true, 'screen-saver');
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   addSafeNavigation(window);
+  petWindowVisibility.set(window, pet.shown !== false);
   petWindows.set(id, window);
-  window.once('ready-to-show', () => window.showInactive());
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed() && petWindowVisibility.get(window) !== false) window.showInactive();
+  });
   window.on('moved', () => schedulePositionSave(id, window));
   window.on('close', () => { persistPosition(id, window).catch(() => undefined); });
   window.on('closed', () => {
@@ -624,8 +683,12 @@ async function createPetWindow(id) {
     clearTimeout(positionTimers.get(id));
     notifyPetsChanged();
   });
-  window.loadFile(path.join(__dirname, 'src', 'pet.html'), { query: { petId: id } })
-    .catch(() => window.close());
+  try {
+    await window.loadFile(path.join(__dirname, 'src', 'pet.html'), { query: { petId: id } });
+  } catch {
+    window.close();
+    throw new Error('Deskprite could not open that buddy. Try showing it again.');
+  }
 }
 
 function onlyThisPetWindow(event, petId) {
@@ -663,7 +726,7 @@ ipcMain.handle('pets:create', async (event, input) => {
   const animationFiles = await writeAnimationAssets(id, animations);
   const pet = {
     id,
-    name: cleanName(input?.name),
+    name: cleanPetName(input?.name),
     size: normalizePetSize(input?.size),
     motion: input?.motion === 'still' ? 'still' : 'wander',
     mimeType,
@@ -684,15 +747,53 @@ ipcMain.handle('pets:create', async (event, input) => {
     await removePetAsset(pet).catch(() => undefined);
     throw error;
   }
+  try {
+    await openPetWindow(id);
+  } catch {
+    pet.shown = false;
+    await setPetShown(id, false);
+  }
   notifyPetsChanged();
-  await openPetWindow(id);
   return publicPet(pet);
+});
+
+ipcMain.handle('pets:update', async (event, petId, input) => {
+  onlyCreatorWindow(event);
+  if (!validPetId(petId)) throw new Error('That buddy could not be found.');
+  const updates = cleanPetUpdates(input);
+  const pet = await changeStore((store) => {
+    const savedPet = store.pets.find((item) => item.id === petId);
+    if (!savedPet) throw new Error('That buddy could not be found.');
+    Object.assign(savedPet, updates);
+    return { ...savedPet };
+  });
+
+  try {
+    await applyPetUpdatesToOpenWindow(pet);
+  } catch {
+    pet.shown = false;
+    await setPetShown(pet.id, false);
+    const window = petWindows.get(pet.id);
+    if (window && !window.isDestroyed()) {
+      window.hide();
+      window.close();
+    }
+  }
+  notifyPetsChanged();
+  return publicPet(pet, 'thumbnail');
 });
 
 ipcMain.handle('pets:launch', async (event, petId) => {
   onlyCreatorWindow(event);
   await setPetShown(petId, true);
-  await openPetWindow(petId);
+  try {
+    await openPetWindow(petId);
+  } catch (error) {
+    await setPetShown(petId, false);
+    notifyPetsChanged();
+    throw error;
+  }
+  notifyPetsChanged();
   return true;
 });
 
@@ -706,6 +807,7 @@ ipcMain.handle('pets:hide', async (event, petId) => {
     stopGlide(petId);
     window.hide();
   }
+  notifyPetsChanged();
   return true;
 });
 
@@ -796,23 +898,55 @@ async function showAllPets() {
   await changeStore((nextStore) => {
     for (const pet of nextStore.pets) pet.shown = true;
   });
-  await Promise.all(store.pets.map((pet) => openPetWindow(pet.id)));
+  for (const window of petWindows.values()) petWindowVisibility.set(window, true);
+  await Promise.all(store.pets.map(async (pet) => {
+    try {
+      await openPetWindow(pet.id);
+    } catch {
+      await setPetShown(pet.id, false);
+    }
+  }));
+  notifyPetsChanged();
 }
 
 async function hideAllPets() {
-  await changeStore((store) => {
-    for (const pet of store.pets) pet.shown = false;
-  });
+  const previousWindowStates = [...petWindows.values()].map((window) => ({
+    window,
+    hadState: petWindowVisibility.has(window),
+    state: petWindowVisibility.get(window),
+  }));
+  for (const { window } of previousWindowStates) petWindowVisibility.set(window, false);
+  try {
+    await changeStore((store) => {
+      for (const pet of store.pets) pet.shown = false;
+    });
+  } catch (error) {
+    for (const previous of previousWindowStates) {
+      if (previous.hadState) petWindowVisibility.set(previous.window, previous.state);
+      else petWindowVisibility.delete(previous.window);
+    }
+    throw error;
+  }
   await persistOpenPetPositions();
   for (const window of petWindows.values()) {
     if (!window.isDestroyed()) window.hide();
   }
   for (const petId of petWindows.keys()) stopGlide(petId);
+  notifyPetsChanged();
 }
 
 async function restoreShownPets() {
   const store = await readStore();
-  await Promise.all(store.pets.filter((pet) => pet.shown !== false).map((pet) => openPetWindow(pet.id)));
+  let changed = false;
+  await Promise.all(store.pets.filter((pet) => pet.shown !== false).map(async (pet) => {
+    try {
+      await openPetWindow(pet.id);
+    } catch {
+      changed = true;
+      await setPetShown(pet.id, false);
+    }
+  }));
+  if (changed) notifyPetsChanged();
 }
 
 async function requestQuit() {
@@ -835,33 +969,45 @@ function createTray() {
   tray.on('click', () => createCreatorWindow());
 }
 
-app.whenReady().then(async () => {
-  try {
-    if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
-      const dockIcon = nativeImage.createFromPath(APP_ICON_PATH);
-      if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!app.isReady()) return;
+    const window = createCreatorWindow();
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  });
+
+  app.whenReady().then(async () => {
+    try {
+      if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
+        const dockIcon = nativeImage.createFromPath(APP_ICON_PATH);
+        if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+      }
+      await migrateLegacyData();
+      await ensureStore();
+      session.defaultSession.setPermissionCheckHandler(() => false);
+      session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+      createTray();
+      createCreatorWindow();
+      restoreShownPets().catch(() => undefined);
+
+      app.on('activate', () => createCreatorWindow());
+    } catch (error) {
+      dialog.showErrorBox(
+        'Deskprite could not start',
+        friendlyErrorMessage(error, 'Deskprite could not access its local storage.'),
+      );
+      app.quit();
     }
-    await migrateLegacyData();
-    await ensureStore();
-    session.defaultSession.setPermissionCheckHandler(() => false);
-    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-    createTray();
-    createCreatorWindow();
-    restoreShownPets().catch(() => undefined);
+  });
 
-    app.on('activate', () => createCreatorWindow());
-  } catch (error) {
-    dialog.showErrorBox(
-      'Deskprite could not start',
-      friendlyErrorMessage(error, 'Deskprite could not access its local storage.'),
-    );
-    app.quit();
-  }
-});
-
-app.on('before-quit', (event) => {
-  if (!quitting) {
-    event.preventDefault();
-    requestQuit();
-  }
-});
+  app.on('before-quit', (event) => {
+    if (!quitting) {
+      event.preventDefault();
+      requestQuit();
+    }
+  });
+}

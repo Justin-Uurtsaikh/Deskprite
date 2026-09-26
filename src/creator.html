@@ -92,19 +92,31 @@
             </label>
             <div id="sheet-info" class="sheet-info" hidden>
               <p id="sheet-dimensions" class="sheet-dimensions"></p>
+              <div id="sheet-map" class="sheet-map">
+                <img id="sheet-preview-image" alt="Uploaded sprite sheet" />
+                <div id="sheet-grid-overlay" class="sheet-grid-overlay" aria-hidden="true"></div>
+              </div>
+              <div class="sheet-map-legend" aria-label="Sprite sheet selection colors">
+                <span><i class="sheet-map-key sheet-map-key--idle" aria-hidden="true"></i>Idle frames</span>
+                <span><i class="sheet-map-key sheet-map-key--walk" aria-hidden="true"></i>Walk frames</span>
+              </div>
               <div id="grid-choices" class="grid-choices" aria-label="Choose a square sprite-cell grid"></div>
             </div>
-            <div class="sheet-settings" aria-label="Sprite sheet layout">
-              <label>Columns <input id="sheet-columns" type="number" min="1" max="32" value="4" inputmode="numeric" /></label>
-              <label>Rows <input id="sheet-rows" type="number" min="1" max="32" value="2" inputmode="numeric" /></label>
-              <label>Idle row <input id="idle-row" type="number" min="1" max="32" value="1" inputmode="numeric" /></label>
-              <label>Idle starts at <input id="idle-start" type="number" min="1" max="32" value="1" inputmode="numeric" /></label>
-              <label>Idle frames <input id="idle-frames" type="number" min="1" max="8" value="4" inputmode="numeric" /></label>
-              <label>Walk row <input id="walk-row" type="number" min="1" max="32" value="2" inputmode="numeric" /></label>
-              <label>Walk starts at <input id="walk-start" type="number" min="1" max="32" value="1" inputmode="numeric" /></label>
-              <label>Walk frames <input id="walk-frames" type="number" min="1" max="8" value="4" inputmode="numeric" /></label>
-            </div>
-            <p id="sheet-status" class="panel-status">Tip: use the same row for idle and walk if your sheet only has one animation.</p>
+            <details class="sheet-advanced">
+              <summary>Advanced: rows and frame ranges</summary>
+              <p>Fine-tune these values if the suggested grid does not select the right poses.</p>
+              <div class="sheet-settings" aria-label="Sprite sheet layout">
+                <label>Columns <input id="sheet-columns" type="number" min="1" max="32" value="4" inputmode="numeric" /></label>
+                <label>Rows <input id="sheet-rows" type="number" min="1" max="32" value="2" inputmode="numeric" /></label>
+                <label>Idle row <input id="idle-row" type="number" min="1" max="32" value="1" inputmode="numeric" /></label>
+                <label>Idle starts at <input id="idle-start" type="number" min="1" max="32" value="1" inputmode="numeric" /></label>
+                <label>Idle frames <input id="idle-frames" type="number" min="1" max="8" value="4" inputmode="numeric" /></label>
+                <label>Walk row <input id="walk-row" type="number" min="1" max="32" value="2" inputmode="numeric" /></label>
+                <label>Walk starts at <input id="walk-start" type="number" min="1" max="32" value="1" inputmode="numeric" /></label>
+                <label>Walk frames <input id="walk-frames" type="number" min="1" max="8" value="4" inputmode="numeric" /></label>
+              </div>
+            </details>
+            <p id="sheet-status" class="panel-status" role="status" aria-live="polite">Tip: use the same row for idle and walk if your sheet only has one animation.</p>
           </section>
 
           <section id="draw-panel" class="creation-panel draw-panel" aria-labelledby="draw-title" hidden>
@@ -147,6 +159,20 @@
             <input id="size-input" name="size" type="range" min="64" max="192" value="112" />
           </div>
 
+          <fieldset class="motion-setting">
+            <legend class="field-label">Movement</legend>
+            <div class="motion-options">
+              <label class="motion-option">
+                <input type="radio" name="motion" value="wander" checked />
+                <span><strong>Wanders</strong><small>Walks around the screen</small></span>
+              </label>
+              <label class="motion-option">
+                <input type="radio" name="motion" value="still" />
+                <span><strong>Stays put</strong><small>Moves only when dragged</small></span>
+              </label>
+            </div>
+          </fieldset>
+
           <p id="form-message" class="form-message" role="status" aria-live="polite"></p>
           <button id="create-button" class="primary-button" type="submit">Create &amp; launch <span aria-hidden="true">→</span></button>
         </form>
@@ -155,6 +181,14 @@
           <div class="section-heading">
             <h2 id="preview-title">Animation preview</h2>
           </div>
+          <div class="preview-controls">
+            <div class="preview-clip-switch" role="group" aria-label="Preview animation clip">
+              <button type="button" class="clip-button active" data-preview-clip="idle" aria-controls="preview-image" aria-pressed="true">Idle</button>
+              <button type="button" class="clip-button" data-preview-clip="walk" aria-controls="preview-image" aria-pressed="false">Walk</button>
+            </div>
+            <button id="preview-motion-toggle" class="preview-motion-toggle" type="button" aria-pressed="false">Pause preview</button>
+          </div>
+          <p id="preview-clip-status" class="preview-clip-status" aria-live="polite">Idle preview</p>
           <div class="preview-stage">
             <div class="window-view" aria-hidden="true"></div>
             <div id="preview-pet" class="preview-pet preview-placeholder">

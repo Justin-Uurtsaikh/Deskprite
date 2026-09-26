@@ -9,6 +9,8 @@ const {
 const MAX_SHEET_COLUMNS = 32;
 const MAX_SHEET_ROWS = 32;
 const DRAW_SIZE = 160;
+const PREVIEW_SPEEDS = Object.freeze({ idle: 420, walk: 135 });
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const PRESET_LAYOUT = Object.freeze({
   columns: 4,
   rows: 2,
@@ -49,16 +51,23 @@ const layoutInputs = {
 const sheetStatus = document.querySelector('#sheet-status');
 const sheetInfo = document.querySelector('#sheet-info');
 const sheetDimensions = document.querySelector('#sheet-dimensions');
+const sheetPreviewImage = document.querySelector('#sheet-preview-image');
+const sheetGridOverlay = document.querySelector('#sheet-grid-overlay');
 const gridChoices = document.querySelector('#grid-choices');
 const nameInput = document.querySelector('#name-input');
 const sizeInput = document.querySelector('#size-input');
 const sizeOutput = document.querySelector('#size-output');
+const motionInputs = [...document.querySelectorAll('input[name="motion"]')];
 const createButton = document.querySelector('#create-button');
 const message = document.querySelector('#form-message');
 const previewPet = document.querySelector('#preview-pet');
 const previewImage = document.querySelector('#preview-image');
 const previewSymbol = document.querySelector('#preview-symbol');
 const previewName = document.querySelector('#preview-name');
+const previewCard = document.querySelector('.preview-card');
+const previewClipButtons = [...document.querySelectorAll('[data-preview-clip]')];
+const previewMotionToggle = document.querySelector('#preview-motion-toggle');
+const previewClipStatus = document.querySelector('#preview-clip-status');
 const petList = document.querySelector('#pet-list');
 const emptyState = document.querySelector('#empty-state');
 const buddyCount = document.querySelector('#buddy-count');
@@ -87,12 +96,18 @@ let creationMode = 'preset';
 let selectedPresetId = null;
 let presetAnimations = null;
 let presetLoadVersion = 0;
-let presetPreviewTimer = null;
+let previewTimer = null;
+let previewAnimations = null;
+let previewClip = 'idle';
+let previewFrameIndex = 0;
+let previewPaused = false;
 const presetAnimationCache = new Map();
 let selectedSheetData = null;
 let importedAnimations = null;
 let selectedSheetMeta = null;
 let sheetGridChosen = false;
+let importLoadVersion = 0;
+let importBuildVersion = 0;
 let activeClip = 'idle';
 let activeFrame = 0;
 let drawingTool = 'brush';
@@ -113,7 +128,7 @@ function blankFrame() {
 
 function setCreateButton(isWorking) {
   createButton.disabled = isWorking;
-  for (const control of [...modeButtons, ...presetChoices, nameInput, sizeInput]) {
+  for (const control of [...modeButtons, ...presetChoices, nameInput, sizeInput, ...motionInputs]) {
     control.disabled = isWorking;
   }
   createButton.replaceChildren();
@@ -141,6 +156,71 @@ function setPreview(imageData) {
   previewSymbol.hidden = hasImage;
   previewPet.classList.toggle('preview-placeholder', !hasImage);
   previewImage.src = hasImage ? imageData : '';
+}
+
+function stopAnimationPreview() {
+  if (previewTimer) window.clearInterval(previewTimer);
+  previewTimer = null;
+}
+
+function previewAnimationsForMode() {
+  if (creationMode === 'preset') return presetAnimations;
+  if (creationMode === 'import') return importedAnimations;
+  return drawingFrames;
+}
+
+function updatePreviewControls(frames = []) {
+  for (const button of previewClipButtons) {
+    const clip = button.dataset.previewClip;
+    const selected = clip === previewClip;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+    button.disabled = !Array.isArray(previewAnimations?.[clip]) || previewAnimations[clip].length === 0;
+  }
+
+  const systemReduced = reducedMotion.matches;
+  previewMotionToggle.disabled = systemReduced || frames.length < 2;
+  previewMotionToggle.setAttribute('aria-pressed', String(previewPaused));
+  previewMotionToggle.textContent = systemReduced
+    ? 'Motion reduced'
+    : previewPaused
+      ? 'Play preview'
+      : 'Pause preview';
+
+  const state = systemReduced ? 'motion reduced' : previewPaused ? 'paused' : 'playing';
+  const clipName = previewClip === 'walk' ? 'Walk' : 'Idle';
+  const frameLabel = `${frames.length} ${frames.length === 1 ? 'frame' : 'frames'}`;
+  previewClipStatus.textContent = frames.length ? `${clipName} · ${frameLabel} · ${state}` : `${clipName} preview unavailable`;
+  previewPet.classList.toggle('is-preview-walking', previewClip === 'walk' && frames.length > 0);
+  previewPet.classList.toggle('is-preview-paused', systemReduced || previewPaused || frames.length < 2);
+}
+
+function playAnimationPreview(animations = previewAnimationsForMode()) {
+  stopAnimationPreview();
+  previewAnimations = animations || null;
+  const frames = Array.isArray(previewAnimations?.[previewClip]) ? previewAnimations[previewClip] : [];
+  previewFrameIndex = 0;
+  setPreview(frames[0] || null);
+  updatePreviewControls(frames);
+  if (reducedMotion.matches || previewPaused || frames.length < 2) return;
+
+  previewTimer = window.setInterval(() => {
+    previewFrameIndex = (previewFrameIndex + 1) % frames.length;
+    setPreview(frames[previewFrameIndex]);
+  }, PREVIEW_SPEEDS[previewClip]);
+}
+
+function selectPreviewClip(clip) {
+  if (clip !== 'idle' && clip !== 'walk') return;
+  previewClip = clip;
+  playAnimationPreview();
+}
+
+function updatePreviewSize() {
+  const size = Math.max(64, Math.min(192, Number(sizeInput.value) || 112));
+  sizeOutput.value = `${size} px`;
+  previewCard.style.setProperty('--preview-pet-size', `${size}px`);
+  previewCard.style.setProperty('--preview-shadow-size', `${Math.max(44, Math.round(size * 0.62))}px`);
 }
 
 function updatePreviewName() {
@@ -217,6 +297,38 @@ function sheetLayout() {
   };
 }
 
+function updateSheetMap(layout = null) {
+  sheetPreviewImage.src = selectedSheetData || '';
+  if (selectedSheetMeta) {
+    sheetPreviewImage.alt = `Uploaded ${selectedSheetMeta.width} by ${selectedSheetMeta.height} pixel sprite sheet`;
+  } else {
+    sheetPreviewImage.alt = 'Uploaded sprite sheet';
+  }
+  sheetGridOverlay.replaceChildren();
+  sheetGridOverlay.hidden = !layout;
+  if (!layout) return;
+
+  sheetGridOverlay.style.gridTemplateColumns = `repeat(${layout.columns}, minmax(0, 1fr))`;
+  sheetGridOverlay.style.gridTemplateRows = `repeat(${layout.rows}, minmax(0, 1fr))`;
+  const cells = [];
+  for (let row = 0; row < layout.rows; row += 1) {
+    for (let column = 0; column < layout.columns; column += 1) {
+      const cell = document.createElement('span');
+      cell.className = 'sheet-grid-cell';
+      const isIdle = row === layout.idle.row
+        && column >= layout.idle.start
+        && column < layout.idle.start + layout.idle.frames;
+      const isWalk = row === layout.walk.row
+        && column >= layout.walk.start
+        && column < layout.walk.start + layout.walk.frames;
+      cell.classList.toggle('is-idle', isIdle);
+      cell.classList.toggle('is-walk', isWalk);
+      cells.push(cell);
+    }
+  }
+  sheetGridOverlay.replaceChildren(...cells);
+}
+
 function squareGridChoices(width, height) {
   const choices = [];
   for (let columns = 1; columns <= MAX_SHEET_COLUMNS; columns += 1) {
@@ -265,6 +377,7 @@ function renderSheetInfo(width, height) {
   sheetGridChosen = false;
   sheetInfo.hidden = false;
   sheetDimensions.textContent = `${width} × ${height}px sheet · pick a square cell size that matches one full character.`;
+  updateSheetMap();
   gridChoices.replaceChildren(...choices.map((choice) => {
     const button = document.createElement('button');
     button.type = 'button';
@@ -277,10 +390,13 @@ function renderSheetInfo(width, height) {
       applyGridChoice(choice);
       if (!selectedSheetData) return;
       try {
-        await rebuildImportedAnimations();
-        setMessage();
+        const animations = await rebuildImportedAnimations();
+        if (animations) setMessage();
       } catch (error) {
         importedAnimations = null;
+        updateSheetMap();
+        if (creationMode === 'import') playAnimationPreview(null);
+        setSheetStatus('Check your row, column, and frame values.');
         setMessage(friendlyErrorMessage(error));
       }
     });
@@ -338,39 +454,26 @@ async function splitSpriteSheet(imageData, layoutOverride = null) {
 }
 
 async function rebuildImportedAnimations() {
-  if (!selectedSheetData) return null;
-  const { clips: animations, layout, frameWidth, frameHeight } = await splitSpriteSheet(selectedSheetData);
+  const sheetData = selectedSheetData;
+  if (!sheetData) return null;
+  const buildVersion = ++importBuildVersion;
+  let result;
+  try {
+    result = await splitSpriteSheet(sheetData);
+  } catch (error) {
+    if (buildVersion !== importBuildVersion || sheetData !== selectedSheetData) return null;
+    throw error;
+  }
+  if (buildVersion !== importBuildVersion || sheetData !== selectedSheetData) return null;
+
+  const { clips: animations, layout, frameWidth, frameHeight } = result;
   importedAnimations = animations;
-  setPreview(animations.idle[0]);
   updateGridChoiceState();
+  updateSheetMap(layout);
+  if (creationMode === 'import') playAnimationPreview(animations);
   const range = (clip) => `row ${layout[clip].row + 1}, columns ${layout[clip].start + 1}–${layout[clip].start + layout[clip].frames}`;
   setSheetStatus(`Ready: ${frameWidth} × ${frameHeight}px cells · idle ${range('idle')} · walk ${range('walk')}.`);
   return animations;
-}
-
-function stopPresetPreview() {
-  if (presetPreviewTimer) window.clearInterval(presetPreviewTimer);
-  presetPreviewTimer = null;
-}
-
-function playPresetPreview(animations) {
-  stopPresetPreview();
-  const frames = animations?.idle || [];
-  if (!frames.length) {
-    setPreview(null);
-    return;
-  }
-  let frameIndex = 0;
-  setPreview(frames[frameIndex]);
-  if (frames.length === 1 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  presetPreviewTimer = window.setInterval(() => {
-    if (creationMode !== 'preset') {
-      stopPresetPreview();
-      return;
-    }
-    frameIndex = (frameIndex + 1) % frames.length;
-    setPreview(frames[frameIndex]);
-  }, 520);
 }
 
 async function loadPresetAnimations(presetId) {
@@ -394,7 +497,7 @@ async function selectPreset(presetId, { updateName = true } = {}) {
   const loadVersion = ++presetLoadVersion;
   selectedPresetId = presetId;
   presetAnimations = presetAnimationCache.get(presetId) || null;
-  stopPresetPreview();
+  stopAnimationPreview();
   for (const choice of presetChoices) {
     const isActive = choice.dataset.presetId === presetId;
     choice.classList.toggle('active', isActive);
@@ -407,20 +510,19 @@ async function selectPreset(presetId, { updateName = true } = {}) {
   presetPanel.setAttribute('aria-busy', 'true');
   presetStatus.textContent = `Loading ${preset.name}…`;
   if (creationMode === 'preset') {
-    if (presetAnimations) playPresetPreview(presetAnimations);
-    else setPreview(null);
+    playAnimationPreview(presetAnimations);
   }
   setMessage();
   try {
     const animations = await loadPresetAnimations(presetId);
     if (loadVersion !== presetLoadVersion) return;
     presetAnimations = animations;
-    if (creationMode === 'preset') playPresetPreview(animations);
+    if (creationMode === 'preset') playAnimationPreview(animations);
     presetStatus.textContent = `${preset.name} is ready · 4 idle + 4 walk frames.`;
   } catch (error) {
     if (loadVersion !== presetLoadVersion) return;
     presetAnimations = null;
-    if (creationMode === 'preset') setPreview(null);
+    if (creationMode === 'preset') playAnimationPreview(null);
     presetStatus.textContent = 'This starter could not be loaded.';
     throw error;
   } finally {
@@ -429,16 +531,32 @@ async function selectPreset(presetId, { updateName = true } = {}) {
 }
 
 async function useFile(file) {
+  const loadVersion = ++importLoadVersion;
+  importBuildVersion += 1;
   setMessage();
+  selectedSheetData = null;
   importedAnimations = null;
-  if (!file) return;
+  selectedSheetMeta = null;
+  sheetGridChosen = false;
+  sheetInfo.hidden = true;
+  gridChoices.replaceChildren();
+  updateSheetMap();
+  if (creationMode === 'import') playAnimationPreview(null);
+  if (!file) {
+    setSheetStatus();
+    return;
+  }
+  setSheetStatus('Checking your PNG…');
   try {
     validateUploadMetadata(file);
     const imageData = await readFile(file);
+    if (loadVersion !== importLoadVersion) return;
     const details = await window.deskprite.validateImage(imageData);
+    if (loadVersion !== importLoadVersion) return;
     if (!await imageHasTransparentPixels(imageData)) {
       throw new Error(ERROR_MESSAGES.noTransparentBackground);
     }
+    if (loadVersion !== importLoadVersion) return;
     selectedSheetData = imageData;
     const hasGridChoices = renderSheetInfo(details.width, details.height);
     if (sheetGridChosen) await rebuildImportedAnimations();
@@ -446,12 +564,14 @@ async function useFile(file) {
       setSheetStatus('Choose one of the grid sizes above, then set each animation row, start column, and frame count.');
     }
   } catch (error) {
+    if (loadVersion !== importLoadVersion) return;
     selectedSheetData = null;
     selectedSheetMeta = null;
     sheetGridChosen = false;
     sheetInfo.hidden = true;
     gridChoices.replaceChildren();
-    setPreview(null);
+    updateSheetMap();
+    if (creationMode === 'import') playAnimationPreview(null);
     setSheetStatus();
     setMessage(friendlyErrorMessage(error));
   }
@@ -459,7 +579,7 @@ async function useFile(file) {
 
 function setCreationMode(nextMode) {
   if (creationMode === 'draw') saveActiveFrame();
-  stopPresetPreview();
+  stopAnimationPreview();
   creationMode = nextMode;
   presetPanel.hidden = nextMode !== 'preset';
   importPanel.hidden = nextMode !== 'import';
@@ -470,15 +590,16 @@ function setCreationMode(nextMode) {
     button.setAttribute('aria-pressed', String(isActive));
   }
   if (nextMode === 'draw') {
-    setPreview(drawingFrames[activeClip][activeFrame]);
+    previewClip = activeClip;
+    playAnimationPreview(drawingFrames);
   } else if (nextMode === 'preset') {
-    if (presetAnimations?.idle?.[0]) playPresetPreview(presetAnimations);
+    if (presetAnimations?.idle?.[0]) playAnimationPreview(presetAnimations);
     else if (selectedPresetId) selectPreset(selectedPresetId, { updateName: false }).catch(showError);
     else selectPreset('sprout').catch(showError);
   } else if (importedAnimations?.idle?.[0]) {
-    setPreview(importedAnimations.idle[0]);
+    playAnimationPreview(importedAnimations);
   } else {
-    setPreview(null);
+    playAnimationPreview(null);
   }
   updateOnionSkin();
   setMessage();
@@ -509,7 +630,7 @@ async function loadActiveFrame() {
   const source = await loadImage(data);
   if (loadVersion !== frameLoadVersion) return;
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
-  if (creationMode === 'draw') setPreview(data);
+  if (creationMode === 'draw') playAnimationPreview(drawingFrames);
   updateOnionSkin();
 }
 
@@ -557,6 +678,7 @@ async function selectFrame(index) {
 async function selectClip(clip) {
   saveActiveFrame();
   activeClip = clip;
+  previewClip = clip;
   activeFrame = 0;
   await loadActiveFrame();
   updateDrawingUI();
@@ -594,6 +716,7 @@ function paintStroke(from, to) {
 function startDrawing(event) {
   if (event.button !== 0) return;
   event.preventDefault();
+  stopAnimationPreview();
   isDrawing = true;
   lastPoint = canvasPoint(event);
   canvas.setPointerCapture(event.pointerId);
@@ -613,7 +736,7 @@ function stopDrawing(event) {
   lastPoint = null;
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   saveActiveFrame();
-  setPreview(drawingFrames[activeClip][activeFrame]);
+  playAnimationPreview(drawingFrames);
   updateDrawingUI();
 }
 
@@ -636,6 +759,93 @@ function button(label, className, handler) {
   element.textContent = label;
   element.addEventListener('click', handler);
   return element;
+}
+
+function petEditor(pet, editButton) {
+  const editor = document.createElement('form');
+  editor.className = 'pet-card-editor';
+  editor.id = `edit-${pet.id}`;
+  editor.hidden = true;
+
+  const nameLabel = document.createElement('label');
+  nameLabel.textContent = 'Name';
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.maxLength = 36;
+  name.value = pet.name;
+  name.autocomplete = 'off';
+  nameLabel.append(name);
+
+  const sizeLabel = document.createElement('label');
+  const sizeLabelText = document.createElement('span');
+  sizeLabelText.textContent = 'Size ';
+  const sizeValue = document.createElement('output');
+  sizeValue.value = `${pet.size} px`;
+  sizeLabelText.append(sizeValue);
+  const size = document.createElement('input');
+  size.type = 'range';
+  size.min = '64';
+  size.max = '192';
+  size.value = String(pet.size);
+  size.addEventListener('input', () => { sizeValue.value = `${size.value} px`; });
+  sizeLabel.append(sizeLabelText, size);
+
+  const motionLabel = document.createElement('label');
+  motionLabel.textContent = 'Movement';
+  const motion = document.createElement('select');
+  const wanderOption = document.createElement('option');
+  wanderOption.value = 'wander';
+  wanderOption.textContent = 'Wanders around';
+  const stillOption = document.createElement('option');
+  stillOption.value = 'still';
+  stillOption.textContent = 'Stays put';
+  motion.append(wanderOption, stillOption);
+  motion.value = pet.motion === 'still' ? 'still' : 'wander';
+  motionLabel.append(motion);
+
+  const editorMessage = document.createElement('p');
+  editorMessage.className = 'pet-editor-message';
+  editorMessage.setAttribute('role', 'status');
+  editorMessage.setAttribute('aria-live', 'polite');
+
+  const editorActions = document.createElement('div');
+  editorActions.className = 'pet-editor-actions';
+  const saveButton = button('Save changes', 'save-button', () => undefined);
+  saveButton.type = 'submit';
+  const cancelButton = button('Cancel', 'cancel-button', () => {
+    name.value = pet.name;
+    size.value = String(pet.size);
+    motion.value = pet.motion === 'still' ? 'still' : 'wander';
+    sizeValue.value = `${pet.size} px`;
+    editorMessage.textContent = '';
+    editor.hidden = true;
+    editButton.setAttribute('aria-expanded', 'false');
+    editButton.focus();
+  });
+  editorActions.append(saveButton, cancelButton);
+  editor.append(nameLabel, sizeLabel, motionLabel, editorMessage, editorActions);
+
+  editor.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    saveButton.disabled = true;
+    cancelButton.disabled = true;
+    editorMessage.textContent = 'Saving changes…';
+    try {
+      const updated = await window.deskprite.updatePet(pet.id, {
+        name: name.value,
+        size: size.value,
+        motion: motion.value,
+      });
+      await refreshPets();
+      setMessage(`${updated.name} was updated.`, true);
+    } catch (error) {
+      editorMessage.textContent = friendlyErrorMessage(error);
+      saveButton.disabled = false;
+      cancelButton.disabled = false;
+    }
+  });
+
+  return editor;
 }
 
 function makePetCard(pet) {
@@ -661,14 +871,39 @@ function makePetCard(pet) {
   const title = document.createElement('h3');
   title.className = 'pet-card-title';
   title.textContent = pet.name;
+  const status = document.createElement('span');
+  status.className = `pet-card-status ${pet.shown ? 'is-shown' : 'is-hidden'}`;
+  status.textContent = pet.shown ? 'On desktop' : 'Hidden';
   const meta = document.createElement('p');
   meta.className = 'pet-card-meta';
-  meta.textContent = `${pet.size} px · idle + walk frames`;
+  meta.textContent = `${pet.size} px · ${pet.motion === 'still' ? 'Stays put' : 'Wanders'}`;
   const actions = document.createElement('div');
   actions.className = 'card-actions';
+  const visibilityLabel = pet.shown ? 'Hide' : 'Show';
+  const visibilityButton = button(visibilityLabel, pet.shown ? 'hide-button' : 'show-button', async () => {
+    visibilityButton.disabled = true;
+    try {
+      if (pet.shown) await window.deskprite.hidePet(pet.id);
+      else await window.deskprite.launchPet(pet.id);
+      await refreshPets();
+    } catch (error) {
+      showError(error);
+      visibilityButton.disabled = false;
+    }
+  });
+  visibilityButton.setAttribute('aria-label', `${visibilityLabel} ${pet.name}`);
+  const editButton = button('Edit', 'edit-button', () => {
+    const isOpening = editor.hidden;
+    editor.hidden = !isOpening;
+    editButton.setAttribute('aria-expanded', String(isOpening));
+    if (isOpening) editor.querySelector('input')?.focus();
+  });
+  editButton.setAttribute('aria-expanded', 'false');
+  editButton.setAttribute('aria-controls', `edit-${pet.id}`);
+  const editor = petEditor(pet, editButton);
   actions.append(
-    button('Show', 'show-button', () => window.deskprite.launchPet(pet.id).catch(showError)),
-    button('Hide', 'hide-button', () => window.deskprite.hidePet(pet.id).catch(showError)),
+    visibilityButton,
+    editButton,
     button('Delete', 'delete-button', async () => {
       if (!window.confirm(`Delete ${pet.name}? This removes all of its saved sprite frames.`)) return;
       try {
@@ -679,7 +914,7 @@ function makePetCard(pet) {
       }
     }),
   );
-  body.append(title, meta, actions);
+  body.append(title, status, meta, actions, editor);
   card.append(imageArea, body);
   return card;
 }
@@ -701,7 +936,7 @@ async function refreshPets() {
 
 async function resetCreator() {
   form.reset();
-  stopPresetPreview();
+  stopAnimationPreview();
   presetLoadVersion += 1;
   selectedPresetId = null;
   presetAnimations = null;
@@ -714,21 +949,27 @@ async function resetCreator() {
   importedAnimations = null;
   selectedSheetMeta = null;
   sheetGridChosen = false;
+  importLoadVersion += 1;
+  importBuildVersion += 1;
   sheetInfo.hidden = true;
   gridChoices.replaceChildren();
+  updateSheetMap();
   drawingFrames = { idle: [blankFrame()], walk: [blankFrame()] };
   activeClip = 'idle';
+  previewClip = 'idle';
   activeFrame = 0;
   drawingTool = 'brush';
+  previewPaused = false;
   sizeInput.value = '112';
-  sizeOutput.value = '112 px';
+  updatePreviewSize();
   brushSizeOutput.value = `${brushSize.value} px`;
-  setPreview(null);
+  playAnimationPreview(null);
   setSheetStatus();
   clearCanvas();
   updateDrawingUI();
   updatePreviewName();
   if (creationMode === 'preset') await selectPreset('sprout');
+  else playAnimationPreview(previewAnimationsForMode());
 }
 
 imageInput.addEventListener('change', () => useFile(imageInput.files?.[0]));
@@ -756,17 +997,27 @@ for (const input of Object.values(layoutInputs)) {
     if (!selectedSheetData) return;
     sheetGridChosen = true;
     try {
-      await rebuildImportedAnimations();
-      setMessage();
+      const animations = await rebuildImportedAnimations();
+      if (animations) setMessage();
     } catch (error) {
       importedAnimations = null;
+      updateSheetMap();
+      if (creationMode === 'import') playAnimationPreview(null);
       setSheetStatus('Check your row, column, and frame values.');
       setMessage(friendlyErrorMessage(error));
     }
   });
 }
 nameInput.addEventListener('input', updatePreviewName);
-sizeInput.addEventListener('input', () => { sizeOutput.value = `${sizeInput.value} px`; });
+sizeInput.addEventListener('input', updatePreviewSize);
+for (const button of previewClipButtons) {
+  button.addEventListener('click', () => selectPreviewClip(button.dataset.previewClip));
+}
+previewMotionToggle.addEventListener('click', () => {
+  previewPaused = !previewPaused;
+  playAnimationPreview();
+});
+reducedMotion.addEventListener('change', () => playAnimationPreview());
 
 brushSize.addEventListener('input', updateDrawingUI);
 onionToggle.addEventListener('change', updateOnionSkin);
@@ -776,7 +1027,7 @@ eraserTool.addEventListener('click', () => { drawingTool = 'eraser'; updateDrawi
 clearFrameButton.addEventListener('click', () => {
   clearCanvas();
   saveActiveFrame();
-  setPreview(drawingFrames[activeClip][activeFrame]);
+  playAnimationPreview(drawingFrames);
   updateDrawingUI();
 });
 for (const clipButton of clipButtons) {
@@ -797,7 +1048,7 @@ deleteFrameButton.addEventListener('click', async () => {
   if (drawingFrames[activeClip].length === 1) {
     clearCanvas();
     saveActiveFrame();
-    setPreview(drawingFrames[activeClip][activeFrame]);
+    playAnimationPreview(drawingFrames);
   } else {
     drawingFrames[activeClip].splice(activeFrame, 1);
     activeFrame = Math.min(activeFrame, drawingFrames[activeClip].length - 1);
@@ -817,6 +1068,7 @@ form.addEventListener('submit', async (event) => {
   const requestedPresetId = selectedPresetId;
   const requestedName = nameInput.value;
   const requestedSize = sizeInput.value;
+  const requestedMotion = form.elements.motion.value;
   setCreateButton(true);
   setMessage();
   try {
@@ -830,14 +1082,19 @@ form.addEventListener('submit', async (event) => {
     } else {
       animations = await exportedDrawingAnimations();
     }
-    await window.deskprite.createPet({
+    const createdPet = await window.deskprite.createPet({
       animations,
       name: requestedName,
       size: requestedSize,
-      motion: 'wander',
+      motion: requestedMotion,
     });
     await resetCreator();
-    setMessage('Your animated buddy is now on your desktop.', true);
+    setMessage(
+      createdPet.shown
+        ? 'Your animated buddy is now on your desktop.'
+        : 'Your buddy was saved. Select Show when you are ready to open it.',
+      true,
+    );
     await refreshPets();
   } catch (error) {
     showError(error);
@@ -848,6 +1105,8 @@ form.addEventListener('submit', async (event) => {
 
 window.deskprite.onPetsChanged(refreshPets);
 updatePreviewName();
+updatePreviewSize();
+playAnimationPreview(null);
 updateDrawingUI();
 loadActiveFrame().catch(showError);
 selectPreset('sprout').catch(showError);

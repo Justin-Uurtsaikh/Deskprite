@@ -28,7 +28,7 @@ The [live Deskprite website](https://justin-uurtsaikh.github.io/Deskprite/) is p
    npm run dev
    ```
 
-4. Choose a **Starter buddy**, **Import sprite sheet**, or **Draw your own**, then select **Create & launch**.
+4. Choose a **Starter buddy**, **Import sprite sheet**, or **Draw your own**. Preview the idle and walk loops, choose whether the buddy wanders or stays put, then select **Create & launch**.
 
 Your buddy appears as only a transparent sprite—no border, white card, hover buttons, heart, or exit control. Drag the sprite itself anywhere. New buddies start at `112 px` and can be sized from `64 px` to `192 px`. They switch to their walk frames while moving, return to idle when they stop, and wrap to the opposite side after walking fully past any screen edge. With multiple buddies open, each one wanders on its own staggered schedule and picks a different recent direction.
 
@@ -41,7 +41,7 @@ Open **Starter buddies**, choose a character, adjust its name and size, then sel
 ### Import a sprite sheet
 
 Deskprite accepts transparent PNG sprite sheets with real transparent pixels.
-After upload, it shows multiple square-cell grid choices such as `4 × 1 · 256px` or `12 × 8 · 32px`. Pick the one that puts one complete character in each cell, then choose each clip's row, starting column, and frame count. A common layout is four idle frames on row 1 and four walk frames on row 2.
+After upload, it shows the complete sheet with a cell grid and separate highlights for idle and walk frames. Pick the grid that puts one complete character in each cell, then use the Advanced controls only if you need to change a clip's row, starting column, or frame count. A common layout is four idle frames on row 1 and four walk frames on row 2.
 
 The source must be the clean PNG sprite sheet—not a screenshot with a checkerboard background, labels, grid lines, borders, or a white background. Deskprite's sprite validation and packaging currently support PNG files only.
 
@@ -50,6 +50,10 @@ The source must be the clean PNG sprite sheet—not a screenshot with a checkerb
 Switch to **Draw your own**. Choose your desired brush color and size, draw the current frame, then use **Add frame** for the next pose. Make at least one visible `Idle` frame and one visible `Walk` frame for it to create a sprite. Turn on **Previous frame** to see a semi-transparent onion-skin reference while drawing the next frame; it is never saved into your art.
 
 For the full workflow and layout examples, see [`docs/SPRITE_WORKFLOWS.md`](docs/SPRITE_WORKFLOWS.md).
+
+## Edit a saved buddy
+
+Each saved-buddy card shows whether that buddy is currently on the desktop or hidden. Select **Edit** to rename it, change its size, or switch between wandering and staying put. These changes are saved locally and are applied to an open buddy immediately.
 
 ## Create an app file
 

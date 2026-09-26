@@ -27,6 +27,7 @@ if (isPetWindow) {
     listPets: () => invoke('pets:list'),
     validateImage: (imageData) => invoke('pets:validate-image', imageData),
     createPet: (input) => invoke('pets:create', input),
+    updatePet: (petId, changes) => invoke('pets:update', petId, changes),
     launchPet: (petId) => invoke('pets:launch', petId),
     hidePet: (petId) => invoke('pets:hide', petId),
     deletePet: (petId) => invoke('pets:delete', petId),

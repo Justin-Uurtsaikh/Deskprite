@@ -29,6 +29,7 @@ const {
   wrappedPosition,
   friendlyErrorMessage,
 } = require('../src/core');
+const { cleanPetName, cleanPetUpdates } = require('../src/pet-settings');
 
 function pngHeader({ width = 32, height = 32, colorType = 6, transparentChunk = false } = {}) {
   const header = Buffer.alloc(33);
@@ -195,6 +196,20 @@ test('buddy sizes default, round, and clamp to the supported range', () => {
   assert.deepEqual(petWindowMetrics(112), { spriteSize: 112, windowSize: 154, inset: 21 });
 });
 
+test('saved buddy edits normalize only the supported settings', () => {
+  assert.equal(cleanPetName('  Little\n Sprout  '), 'Little Sprout');
+  assert.equal(cleanPetName(''), 'New buddy');
+  assert.equal(cleanPetName('x'.repeat(50)).length, 36);
+  assert.deepEqual(
+    cleanPetUpdates({ name: '  Fern  ', size: '193', motion: 'still', imageFile: 'ignored.png' }),
+    { name: 'Fern', size: 192, motion: 'still' },
+  );
+  assert.deepEqual(cleanPetUpdates({ size: 63 }), { size: 64 });
+  assert.equal(messageOf(() => cleanPetUpdates({})), ERROR_MESSAGES.generic);
+  assert.equal(messageOf(() => cleanPetUpdates({ motion: 'sometimes' })), ERROR_MESSAGES.generic);
+  assert.equal(messageOf(() => cleanPetUpdates({ size: '' })), ERROR_MESSAGES.generic);
+});
+
 test('screen-edge wrapping moves a buddy from either edge to the opposite edge', () => {
   const spriteSize = 112;
   const inset = 21;
@@ -240,6 +255,31 @@ test('friendly errors remove Electron wrappers and hide technical failures', () 
 test('the size control stays aligned with the shared limits', () => {
   const creatorHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'creator.html'), 'utf8');
   assert.match(creatorHtml, /id="size-input"[^>]*min="64"[^>]*max="192"[^>]*value="112"/);
+});
+
+test('the creator exposes animation inspection and editable saved buddy settings', () => {
+  const creatorHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'creator.html'), 'utf8');
+  const creatorScript = fs.readFileSync(path.join(__dirname, '..', 'src', 'creator.js'), 'utf8');
+  const creatorCss = fs.readFileSync(path.join(__dirname, '..', 'src', 'creator.css'), 'utf8');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+
+  assert.match(creatorHtml, /data-preview-clip="idle"/);
+  assert.match(creatorHtml, /data-preview-clip="walk"/);
+  assert.match(creatorHtml, /id="sheet-preview-image"/);
+  assert.match(creatorHtml, /id="sheet-grid-overlay"/);
+  assert.match(creatorHtml, /<details class="sheet-advanced">/);
+  assert.match(creatorHtml, /name="motion" value="wander" checked/);
+  assert.match(creatorHtml, /name="motion" value="still"/);
+  assert.match(creatorScript, /function playAnimationPreview\(/);
+  assert.match(creatorScript, /function updateSheetMap\(/);
+  assert.match(creatorScript, /window\.deskprite\.updatePet\(pet\.id/);
+  assert.match(creatorScript, /pet\.shown \? 'Hide' : 'Show'/);
+  assert.match(creatorCss, /\.sheet-grid-overlay[\s\S]+pointer-events:\s*none/);
+  assert.match(creatorCss, /var\(--preview-pet-size\)/);
+  assert.match(preload, /updatePet: \(petId, changes\) => invoke\('pets:update'/);
+  assert.match(main, /ipcMain\.handle\('pets:update'/);
+  assert.match(main, /shown: pet\.shown !== false/);
 });
 
 test('the shared browser core loads before both renderer scripts', () => {
