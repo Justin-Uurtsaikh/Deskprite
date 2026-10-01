@@ -27,6 +27,7 @@ const {
   petWindowMetrics,
   wrappedAxisPosition,
   wrappedPosition,
+  nearestVisiblePositionInAreas,
   friendlyErrorMessage,
 } = require('../src/core');
 const { cleanPetName, cleanPetUpdates } = require('../src/pet-settings');
@@ -222,6 +223,32 @@ test('screen-edge wrapping moves a buddy from either edge to the opposite edge',
   assert.deepEqual(
     wrappedPosition(979, 779, { x: 0, y: 0, width: 1_000, height: 800 }, spriteSize, inset),
     { x: -133, y: -133 },
+  );
+});
+
+test('multi-monitor projection keeps buddies on real screens instead of bounding-box gaps', () => {
+  const spriteSize = 112;
+  const inset = 21;
+  const areas = [
+    { x: 0, y: 0, width: 1_920, height: 1_080 },
+    { x: 1_920, y: 320, width: 1_280, height: 1_024 },
+    { x: -1_280, y: -480, width: 1_280, height: 1_024 },
+  ];
+
+  assert.deepEqual(
+    nearestVisiblePositionInAreas(2_300, 100, areas, spriteSize, inset),
+    { x: 2_300, y: 299 },
+    'A position above the staggered right monitor should move down to its real work area.',
+  );
+  assert.deepEqual(
+    nearestVisiblePositionInAreas(-700, 900, areas, spriteSize, inset),
+    { x: -700, y: 411 },
+    'A position below the offset left monitor should move onto the nearest real work area.',
+  );
+  assert.deepEqual(
+    nearestVisiblePositionInAreas(2_300, 600, areas, spriteSize, inset),
+    { x: 2_300, y: 600 },
+    'A position already inside a real display work area should remain unchanged.',
   );
 });
 

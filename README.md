@@ -30,7 +30,7 @@ The [live Deskprite website](https://justin-uurtsaikh.github.io/Deskprite/) is p
 
 4. Choose a **Starter buddy**, **Import sprite sheet**, or **Draw your own**. Preview the idle and walk loops, choose whether the buddy wanders or stays put, then select **Create & launch**.
 
-Your buddy appears as only a transparent sprite—no border, white card, hover buttons, heart, or exit control. Drag the sprite itself anywhere. New buddies start at `112 px` and can be sized from `64 px` to `192 px`. They switch to their walk frames while moving, return to idle when they stop, and wrap to the opposite side after walking fully past any screen edge. With multiple buddies open, each one wanders on its own staggered schedule and picks a different recent direction.
+Your buddy appears as only a transparent sprite—no border, white card, hover buttons, heart, or exit control. Drag the sprite itself anywhere. New buddies start at `112 px` and can be sized from `64 px` to `192 px`. They switch to their walk frames while moving, return to idle when they stop, and wrap to the opposite side after walking fully past any screen edge. You can set how often and how far each buddy walks, choose a preferred part of the screen, and optionally keep it on one monitor.
 
 ## Make a sprite
 
@@ -53,7 +53,7 @@ For the full workflow and layout examples, see [`docs/SPRITE_WORKFLOWS.md`](docs
 
 ## Edit a saved buddy
 
-Each saved-buddy card shows whether that buddy is currently on the desktop or hidden. Select **Edit** to rename it, change its size, or switch between wandering and staying put. These changes are saved locally and are applied to an open buddy immediately.
+Each saved-buddy card shows whether that buddy is currently on the desktop or hidden. Select **Edit** to rename it, change its size, switch between wandering and staying put, or adjust all four walking-behavior settings. These changes are saved locally and are applied to an open buddy immediately.
 
 ## Create an app file
 
@@ -94,7 +94,7 @@ Run the full local quality check with:
 npm run check
 ```
 
-GitHub Actions runs the same quality check automatically on every push and pull request.
+GitHub Actions runs the same quality check automatically on every push and pull request. The suite directly covers saved behavior updates, delayed buddy-window loading, hiding during loading, and out-of-order sprite imports.
 
 Regenerate the README animation and its reduced-motion still from Sprout's bundled walk frames with:
 

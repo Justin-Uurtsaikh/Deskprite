@@ -5,11 +5,18 @@ const {
   validateAnimationFrameCounts,
   frameRect,
   friendlyErrorMessage,
+  normalizePetBehavior,
 } = window.DeskpriteCore;
+const { createLatestOperationGuard } = window.DeskpriteAsyncState;
 const MAX_SHEET_COLUMNS = 32;
 const MAX_SHEET_ROWS = 32;
 const DRAW_SIZE = 160;
 const PREVIEW_SPEEDS = Object.freeze({ idle: 420, walk: 135 });
+const BEHAVIOR_LABELS = Object.freeze({
+  frequency: Object.freeze({ rare: 'Every so often', normal: 'Regularly', often: 'Often' }),
+  distance: Object.freeze({ short: 'Short trips', normal: 'Medium trips', long: 'Long trips' }),
+  area: Object.freeze({ anywhere: 'Anywhere', top: 'Top', bottom: 'Bottom', left: 'Left side', right: 'Right side' }),
+});
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const PRESET_LAYOUT = Object.freeze({
   columns: 4,
@@ -58,6 +65,12 @@ const nameInput = document.querySelector('#name-input');
 const sizeInput = document.querySelector('#size-input');
 const sizeOutput = document.querySelector('#size-output');
 const motionInputs = [...document.querySelectorAll('input[name="motion"]')];
+const behaviorInputs = {
+  frequency: document.querySelector('#behavior-frequency'),
+  distance: document.querySelector('#behavior-distance'),
+  area: document.querySelector('#behavior-area'),
+  stayOnMonitor: document.querySelector('#stay-on-monitor'),
+};
 const createButton = document.querySelector('#create-button');
 const message = document.querySelector('#form-message');
 const previewPet = document.querySelector('#preview-pet');
@@ -106,8 +119,8 @@ let selectedSheetData = null;
 let importedAnimations = null;
 let selectedSheetMeta = null;
 let sheetGridChosen = false;
-let importLoadVersion = 0;
-let importBuildVersion = 0;
+const importLoadGuard = createLatestOperationGuard();
+const importBuildGuard = createLatestOperationGuard();
 let activeClip = 'idle';
 let activeFrame = 0;
 let drawingTool = 'brush';
@@ -128,7 +141,14 @@ function blankFrame() {
 
 function setCreateButton(isWorking) {
   createButton.disabled = isWorking;
-  for (const control of [...modeButtons, ...presetChoices, nameInput, sizeInput, ...motionInputs]) {
+  for (const control of [
+    ...modeButtons,
+    ...presetChoices,
+    nameInput,
+    sizeInput,
+    ...motionInputs,
+    ...Object.values(behaviorInputs),
+  ]) {
     control.disabled = isWorking;
   }
   createButton.replaceChildren();
@@ -456,15 +476,15 @@ async function splitSpriteSheet(imageData, layoutOverride = null) {
 async function rebuildImportedAnimations() {
   const sheetData = selectedSheetData;
   if (!sheetData) return null;
-  const buildVersion = ++importBuildVersion;
+  const operation = importBuildGuard.begin();
   let result;
   try {
     result = await splitSpriteSheet(sheetData);
   } catch (error) {
-    if (buildVersion !== importBuildVersion || sheetData !== selectedSheetData) return null;
+    if (!importBuildGuard.isCurrent(operation) || sheetData !== selectedSheetData) return null;
     throw error;
   }
-  if (buildVersion !== importBuildVersion || sheetData !== selectedSheetData) return null;
+  if (!importBuildGuard.isCurrent(operation) || sheetData !== selectedSheetData) return null;
 
   const { clips: animations, layout, frameWidth, frameHeight } = result;
   importedAnimations = animations;
@@ -531,8 +551,8 @@ async function selectPreset(presetId, { updateName = true } = {}) {
 }
 
 async function useFile(file) {
-  const loadVersion = ++importLoadVersion;
-  importBuildVersion += 1;
+  const operation = importLoadGuard.begin();
+  importBuildGuard.invalidate();
   setMessage();
   selectedSheetData = null;
   importedAnimations = null;
@@ -550,13 +570,13 @@ async function useFile(file) {
   try {
     validateUploadMetadata(file);
     const imageData = await readFile(file);
-    if (loadVersion !== importLoadVersion) return;
+    if (!importLoadGuard.isCurrent(operation)) return;
     const details = await window.deskprite.validateImage(imageData);
-    if (loadVersion !== importLoadVersion) return;
+    if (!importLoadGuard.isCurrent(operation)) return;
     if (!await imageHasTransparentPixels(imageData)) {
       throw new Error(ERROR_MESSAGES.noTransparentBackground);
     }
-    if (loadVersion !== importLoadVersion) return;
+    if (!importLoadGuard.isCurrent(operation)) return;
     selectedSheetData = imageData;
     const hasGridChoices = renderSheetInfo(details.width, details.height);
     if (sheetGridChosen) await rebuildImportedAnimations();
@@ -564,7 +584,7 @@ async function useFile(file) {
       setSheetStatus('Choose one of the grid sizes above, then set each animation row, start column, and frame count.');
     }
   } catch (error) {
-    if (loadVersion !== importLoadVersion) return;
+    if (!importLoadGuard.isCurrent(operation)) return;
     selectedSheetData = null;
     selectedSheetMeta = null;
     sheetGridChosen = false;
@@ -761,6 +781,25 @@ function button(label, className, handler) {
   return element;
 }
 
+function petBehavior(pet) {
+  return normalizePetBehavior(pet?.behavior);
+}
+
+function behaviorSelect(labelText, choices, selectedValue) {
+  const label = document.createElement('label');
+  label.append(document.createTextNode(labelText));
+  const select = document.createElement('select');
+  for (const [value, text] of Object.entries(choices)) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = text;
+    select.append(option);
+  }
+  select.value = selectedValue;
+  label.append(select);
+  return { label, select };
+}
+
 function petEditor(pet, editButton) {
   const editor = document.createElement('form');
   editor.className = 'pet-card-editor';
@@ -803,6 +842,30 @@ function petEditor(pet, editButton) {
   motion.value = pet.motion === 'still' ? 'still' : 'wander';
   motionLabel.append(motion);
 
+  const savedBehavior = petBehavior(pet);
+  const behaviorGroup = document.createElement('fieldset');
+  behaviorGroup.className = 'pet-editor-behavior';
+  const behaviorLegend = document.createElement('legend');
+  behaviorLegend.textContent = 'Walking behavior';
+  const frequencyField = behaviorSelect('Walking frequency', BEHAVIOR_LABELS.frequency, savedBehavior.frequency);
+  const distanceField = behaviorSelect('Movement distance', BEHAVIOR_LABELS.distance, savedBehavior.distance);
+  const areaField = behaviorSelect('Preferred screen area', BEHAVIOR_LABELS.area, savedBehavior.area);
+  const monitorLabel = document.createElement('label');
+  monitorLabel.className = 'pet-editor-monitor';
+  const stayOnMonitor = document.createElement('input');
+  stayOnMonitor.type = 'checkbox';
+  stayOnMonitor.checked = savedBehavior.stayOnMonitor;
+  const monitorText = document.createElement('span');
+  monitorText.textContent = 'Stay on this monitor';
+  monitorLabel.append(stayOnMonitor, monitorText);
+  behaviorGroup.append(
+    behaviorLegend,
+    frequencyField.label,
+    distanceField.label,
+    areaField.label,
+    monitorLabel,
+  );
+
   const editorMessage = document.createElement('p');
   editorMessage.className = 'pet-editor-message';
   editorMessage.setAttribute('role', 'status');
@@ -816,6 +879,10 @@ function petEditor(pet, editButton) {
     name.value = pet.name;
     size.value = String(pet.size);
     motion.value = pet.motion === 'still' ? 'still' : 'wander';
+    frequencyField.select.value = savedBehavior.frequency;
+    distanceField.select.value = savedBehavior.distance;
+    areaField.select.value = savedBehavior.area;
+    stayOnMonitor.checked = savedBehavior.stayOnMonitor;
     sizeValue.value = `${pet.size} px`;
     editorMessage.textContent = '';
     editor.hidden = true;
@@ -823,7 +890,7 @@ function petEditor(pet, editButton) {
     editButton.focus();
   });
   editorActions.append(saveButton, cancelButton);
-  editor.append(nameLabel, sizeLabel, motionLabel, editorMessage, editorActions);
+  editor.append(nameLabel, sizeLabel, motionLabel, behaviorGroup, editorMessage, editorActions);
 
   editor.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -835,6 +902,12 @@ function petEditor(pet, editButton) {
         name: name.value,
         size: size.value,
         motion: motion.value,
+        behavior: {
+          frequency: frequencyField.select.value,
+          distance: distanceField.select.value,
+          area: areaField.select.value,
+          stayOnMonitor: stayOnMonitor.checked,
+        },
       });
       await refreshPets();
       setMessage(`${updated.name} was updated.`, true);
@@ -877,6 +950,15 @@ function makePetCard(pet) {
   const meta = document.createElement('p');
   meta.className = 'pet-card-meta';
   meta.textContent = `${pet.size} px · ${pet.motion === 'still' ? 'Stays put' : 'Wanders'}`;
+  const behavior = petBehavior(pet);
+  const behaviorMeta = document.createElement('p');
+  behaviorMeta.className = 'pet-card-behavior';
+  behaviorMeta.textContent = [
+    BEHAVIOR_LABELS.frequency[behavior.frequency],
+    BEHAVIOR_LABELS.distance[behavior.distance],
+    BEHAVIOR_LABELS.area[behavior.area],
+    behavior.stayOnMonitor ? 'This monitor' : 'Any monitor',
+  ].join(' · ');
   const actions = document.createElement('div');
   actions.className = 'card-actions';
   const visibilityLabel = pet.shown ? 'Hide' : 'Show';
@@ -914,7 +996,7 @@ function makePetCard(pet) {
       }
     }),
   );
-  body.append(title, status, meta, actions, editor);
+  body.append(title, status, meta, behaviorMeta, actions, editor);
   card.append(imageArea, body);
   return card;
 }
@@ -949,8 +1031,8 @@ async function resetCreator() {
   importedAnimations = null;
   selectedSheetMeta = null;
   sheetGridChosen = false;
-  importLoadVersion += 1;
-  importBuildVersion += 1;
+  importLoadGuard.invalidate();
+  importBuildGuard.invalidate();
   sheetInfo.hidden = true;
   gridChoices.replaceChildren();
   updateSheetMap();
@@ -1069,6 +1151,12 @@ form.addEventListener('submit', async (event) => {
   const requestedName = nameInput.value;
   const requestedSize = sizeInput.value;
   const requestedMotion = form.elements.motion.value;
+  const requestedBehavior = {
+    frequency: behaviorInputs.frequency.value,
+    distance: behaviorInputs.distance.value,
+    area: behaviorInputs.area.value,
+    stayOnMonitor: behaviorInputs.stayOnMonitor.checked,
+  };
   setCreateButton(true);
   setMessage();
   try {
@@ -1087,6 +1175,7 @@ form.addEventListener('submit', async (event) => {
       name: requestedName,
       size: requestedSize,
       motion: requestedMotion,
+      behavior: requestedBehavior,
     });
     await resetCreator();
     setMessage(

@@ -13,6 +13,17 @@
   const DEFAULT_PET_SIZE = 112;
   const MAX_PET_SIZE = 192;
   const PET_WINDOW_PADDING = 42;
+  const PET_BEHAVIOR_DEFAULTS = Object.freeze({
+    frequency: 'normal',
+    distance: 'normal',
+    area: 'anywhere',
+    stayOnMonitor: false,
+  });
+  const PET_BEHAVIOR_OPTIONS = Object.freeze({
+    frequency: Object.freeze(['rare', 'normal', 'often']),
+    distance: Object.freeze(['short', 'normal', 'long']),
+    area: Object.freeze(['anywhere', 'top', 'bottom', 'left', 'right']),
+  });
 
   const ERROR_MESSAGES = Object.freeze({
     choosePng: 'Choose a PNG image first.',
@@ -57,6 +68,81 @@
     return Number.isFinite(number)
       ? Math.round(clamp(number, MIN_PET_SIZE, MAX_PET_SIZE))
       : DEFAULT_PET_SIZE;
+  }
+
+  function normalizePetBehavior(value) {
+    const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return {
+      frequency: PET_BEHAVIOR_OPTIONS.frequency.includes(input.frequency)
+        ? input.frequency
+        : PET_BEHAVIOR_DEFAULTS.frequency,
+      distance: PET_BEHAVIOR_OPTIONS.distance.includes(input.distance)
+        ? input.distance
+        : PET_BEHAVIOR_DEFAULTS.distance,
+      area: PET_BEHAVIOR_OPTIONS.area.includes(input.area)
+        ? input.area
+        : PET_BEHAVIOR_DEFAULTS.area,
+      stayOnMonitor: typeof input.stayOnMonitor === 'boolean'
+        ? input.stayOnMonitor
+        : PET_BEHAVIOR_DEFAULTS.stayOnMonitor,
+    };
+  }
+
+  function wanderDistanceRange(value) {
+    const distance = PET_BEHAVIOR_OPTIONS.distance.includes(value)
+      ? value
+      : PET_BEHAVIOR_DEFAULTS.distance;
+    if (distance === 'short') return { minimum: 90, spread: 70 };
+    if (distance === 'long') return { minimum: 310, spread: 210 };
+    return { minimum: 175, spread: 170 };
+  }
+
+  function wanderDelayForBehavior(value, initial, phase = 0, random = 0) {
+    const frequency = PET_BEHAVIOR_OPTIONS.frequency.includes(value)
+      ? value
+      : PET_BEHAVIOR_DEFAULTS.frequency;
+    const safePhase = Number.isFinite(Number(phase)) ? Math.max(0, Math.trunc(Number(phase))) : 0;
+    const safeRandom = Number.isFinite(Number(random)) ? clamp(Number(random), 0, 1) : 0;
+    const timing = frequency === 'rare'
+      ? (initial
+        ? { base: 4_500, phaseSpread: 8_000, randomSpread: 1_200 }
+        : { base: 10_000, phaseSpread: 4_000, randomSpread: 10_000 })
+      : frequency === 'often'
+        ? (initial
+          ? { base: 1_200, phaseSpread: 3_000, randomSpread: 600 }
+          : { base: 3_000, phaseSpread: 1_400, randomSpread: 3_600 })
+        : (initial
+          ? { base: 2_200, phaseSpread: 6_000, randomSpread: 850 }
+          : { base: 5_500, phaseSpread: 2_600, randomSpread: 7_200 });
+    return timing.base
+      + (safePhase % timing.phaseSpread)
+      + Math.round(safeRandom * timing.randomSpread);
+  }
+
+  function preferredAreaBounds(area, preference) {
+    const source = area && typeof area === 'object' ? area : {};
+    const bounds = {
+      x: Number.isFinite(source.x) ? Math.round(source.x) : 0,
+      y: Number.isFinite(source.y) ? Math.round(source.y) : 0,
+      width: Number.isFinite(source.width) ? Math.max(1, Math.round(source.width)) : 1,
+      height: Number.isFinite(source.height) ? Math.max(1, Math.round(source.height)) : 1,
+    };
+    const selected = PET_BEHAVIOR_OPTIONS.area.includes(preference)
+      ? preference
+      : PET_BEHAVIOR_DEFAULTS.area;
+    if (selected === 'left' || selected === 'right') {
+      const firstWidth = Math.ceil(bounds.width / 2);
+      const secondWidth = bounds.width - firstWidth;
+      if (selected === 'left') return { ...bounds, width: firstWidth };
+      return { ...bounds, x: bounds.x + firstWidth, width: Math.max(1, secondWidth) };
+    }
+    if (selected === 'top' || selected === 'bottom') {
+      const firstHeight = Math.ceil(bounds.height / 2);
+      const secondHeight = bounds.height - firstHeight;
+      if (selected === 'top') return { ...bounds, height: firstHeight };
+      return { ...bounds, y: bounds.y + firstHeight, height: Math.max(1, secondHeight) };
+    }
+    return bounds;
   }
 
   function petWindowMetrics(value) {
@@ -251,6 +337,40 @@
     };
   }
 
+  function nearestVisiblePositionInAreas(x, y, areas, spriteSize, inset) {
+    const sourceX = Number.isFinite(x) ? x : 0;
+    const sourceY = Number.isFinite(y) ? y : 0;
+    const safeSpriteSize = Number.isFinite(spriteSize) ? Math.max(1, spriteSize) : DEFAULT_PET_SIZE;
+    const safeInset = Number.isFinite(inset) ? Math.max(0, inset) : 0;
+    const candidates = Array.isArray(areas) ? areas.filter((area) => (
+      area
+      && Number.isFinite(area.x)
+      && Number.isFinite(area.y)
+      && Number.isFinite(area.width)
+      && Number.isFinite(area.height)
+      && area.width > 0
+      && area.height > 0
+    )) : [];
+
+    if (!candidates.length) return { x: Math.round(sourceX), y: Math.round(sourceY) };
+
+    let nearest = null;
+    for (const area of candidates) {
+      const minimumX = area.x - safeInset;
+      const minimumY = area.y - safeInset;
+      const maximumX = Math.max(minimumX, area.x + area.width - safeSpriteSize - safeInset);
+      const maximumY = Math.max(minimumY, area.y + area.height - safeSpriteSize - safeInset);
+      const candidateX = clamp(sourceX, minimumX, maximumX);
+      const candidateY = clamp(sourceY, minimumY, maximumY);
+      const distanceSquared = ((candidateX - sourceX) ** 2) + ((candidateY - sourceY) ** 2);
+      if (!nearest || distanceSquared < nearest.distanceSquared) {
+        nearest = { x: candidateX, y: candidateY, distanceSquared };
+      }
+    }
+
+    return { x: Math.round(nearest.x), y: Math.round(nearest.y) };
+  }
+
   function friendlyErrorMessage(error, fallback = ERROR_MESSAGES.generic) {
     const raw = typeof error === 'string' ? error : error?.message;
     if (typeof raw !== 'string' || !raw.trim()) return fallback;
@@ -274,9 +394,15 @@
     DEFAULT_PET_SIZE,
     MAX_PET_SIZE,
     PET_WINDOW_PADDING,
+    PET_BEHAVIOR_DEFAULTS,
+    PET_BEHAVIOR_OPTIONS,
     ERROR_MESSAGES,
     clamp,
     normalizePetSize,
+    normalizePetBehavior,
+    wanderDistanceRange,
+    wanderDelayForBehavior,
+    preferredAreaBounds,
     petWindowMetrics,
     validateUploadMetadata,
     decodePngDataUrl,
@@ -292,6 +418,7 @@
     frameRect,
     wrappedAxisPosition,
     wrappedPosition,
+    nearestVisiblePositionInAreas,
     friendlyErrorMessage,
   });
 }));

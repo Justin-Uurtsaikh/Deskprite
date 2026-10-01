@@ -939,6 +939,90 @@ h3 {
   font-size: 0.68rem;
 }
 
+.behavior-settings {
+  min-width: 0;
+  margin: 22px 0 0;
+  padding: 14px;
+  background: var(--paper);
+  border: 2px solid var(--forest-black);
+  box-shadow: inset 4px 0 0 var(--moss);
+}
+
+.behavior-settings > .field-label {
+  margin: 0;
+  padding: 0 7px;
+}
+
+.behavior-copy {
+  margin: 1px 0 12px;
+  color: var(--bark);
+  font-size: 0.74rem;
+}
+
+.behavior-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.behavior-grid label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--cedar);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.58rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.behavior-grid select {
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 8px;
+  color: var(--ink);
+  background: var(--paper-light);
+  border: 2px solid var(--forest-black);
+  border-radius: 0;
+  font: inherit;
+  text-transform: none;
+}
+
+.monitor-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 11px;
+  padding: 9px 10px;
+  color: var(--ink);
+  background: var(--paper-light);
+  border: 2px solid var(--forest-black);
+  cursor: pointer;
+}
+
+.monitor-option input,
+.pet-editor-monitor input {
+  flex: 0 0 auto;
+  accent-color: var(--cedar);
+}
+
+.monitor-option span,
+.monitor-option small {
+  display: block;
+}
+
+.monitor-option strong {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+}
+
+.monitor-option small {
+  margin-top: 1px;
+  color: var(--cedar);
+  font-size: 0.65rem;
+}
+
 .form-message {
   min-height: 22px;
   margin: 13px 0 7px;
@@ -1272,11 +1356,20 @@ h3 {
 }
 
 .pet-card-meta {
-  margin-bottom: 13px;
+  margin-bottom: 4px;
   color: var(--cedar);
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.58rem;
   font-weight: 700;
+}
+
+.pet-card-behavior {
+  margin-bottom: 13px;
+  color: var(--moss);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.54rem;
+  font-weight: 750;
+  line-height: 1.45;
 }
 
 .pet-card-status {
@@ -1374,6 +1467,37 @@ h3 {
 
 .pet-card-editor output {
   color: var(--ink);
+}
+
+.pet-card-editor .pet-editor-behavior {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 10px;
+  background: var(--paper);
+  border: 2px solid var(--moss);
+}
+
+.pet-editor-behavior legend {
+  padding: 0 5px;
+  color: var(--cedar);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.58rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.pet-card-editor .pet-editor-monitor {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 0;
+  padding: 5px 7px;
+  color: var(--ink);
+  background: var(--paper-light);
+  border: 2px solid var(--forest-black);
+  cursor: pointer;
+  text-transform: none;
 }
 
 .pet-editor-message {
@@ -1498,6 +1622,10 @@ button:active:not(:disabled) {
   }
 
   .motion-options {
+    grid-template-columns: 1fr;
+  }
+
+  .behavior-grid {
     grid-template-columns: 1fr;
   }
 

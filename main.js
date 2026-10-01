@@ -7,8 +7,12 @@ const {
   MAX_FRAMES_PER_CLIP,
   ERROR_MESSAGES,
   clamp,
+  normalizePetBehavior,
   normalizePetSize,
+  nearestVisiblePositionInAreas,
   petWindowMetrics,
+  preferredAreaBounds,
+  wanderDistanceRange,
   decodePngDataUrl,
   validatePngHeader,
   validatePixelInfo,
@@ -17,7 +21,9 @@ const {
   wrappedPosition: wrapPositionInArea,
   friendlyErrorMessage,
 } = require('./src/core');
-const { cleanPetName, cleanPetUpdates } = require('./src/pet-settings');
+const { cleanPetName, cleanPetUpdates, mergePetBehavior } = require('./src/pet-settings');
+const { createPetVisibilityState } = require('./src/pet-visibility');
+const { installReadyToShowGate } = require('./src/window-lifecycle');
 
 const MAX_PETS = 30;
 const PET_ID = /^pet-[a-f0-9-]{20,}$/i;
@@ -40,7 +46,7 @@ let quitting = false;
 let corruptStoreBackup = null;
 const petWindows = new Map();
 const openingPetWindows = new Map();
-const petWindowVisibility = new WeakMap();
+const petVisibility = createPetVisibilityState();
 const dragOrigins = new Map();
 const glideTimers = new Map();
 const positionTimers = new Map();
@@ -128,6 +134,7 @@ function cleanStore(value) {
       ))
       .map((pet) => {
         const cleaned = { ...pet };
+        cleaned.behavior = normalizePetBehavior(pet.behavior);
         const animationFiles = cleanAnimationFiles(pet.animationFiles, pet.id);
         if (animationFiles) cleaned.animationFiles = animationFiles;
         else delete cleaned.animationFiles;
@@ -263,6 +270,7 @@ async function publicPet(pet, imageMode = 'full') {
     name: pet.name,
     size: normalizePetSize(pet.size),
     motion: pet.motion === 'still' ? 'still' : 'wander',
+    behavior: normalizePetBehavior(pet.behavior),
     shown: pet.shown !== false,
     createdAt: pet.createdAt,
   };
@@ -350,24 +358,40 @@ function petWindowInset(pet) {
   return petWindowMetrics(pet.size).inset;
 }
 
-function clampedPosition(x, y, pet) {
+function clampedPositionInArea(x, y, pet, area) {
   const size = petWindowSize(pet);
   const inset = petWindowInset(pet);
-  const display = screen.getDisplayNearestPoint({
-    x: Math.round(x + size / 2),
-    y: Math.round(y + size / 2),
-  });
-  const area = display.workArea;
   return {
     x: Math.round(clamp(x, area.x - inset, Math.max(area.x - inset, area.x + area.width - size + inset))),
     y: Math.round(clamp(y, area.y - inset, Math.max(area.y - inset, area.y + area.height - size + inset))),
   };
 }
 
-function wrappedPosition(x, y, pet, area) {
+function clampedPosition(x, y, pet) {
+  const size = petWindowSize(pet);
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(x + size / 2),
+    y: Math.round(y + size / 2),
+  });
+  return clampedPositionInArea(x, y, pet, display.workArea);
+}
+
+function wrappedPosition(x, y, pet, areas) {
   const spriteSize = petSpriteSize(pet);
   const inset = petWindowInset(pet);
-  return wrapPositionInArea(x, y, area, spriteSize, inset);
+  const workAreas = Array.isArray(areas) && areas.length
+    ? areas
+    : [screen.getPrimaryDisplay().workArea];
+  const wrapped = wrapPositionInArea(
+    x,
+    y,
+    combinedWorkArea(workAreas),
+    spriteSize,
+    inset,
+  );
+  return workAreas.length === 1
+    ? wrapped
+    : nearestVisiblePositionInAreas(wrapped.x, wrapped.y, workAreas, spriteSize, inset);
 }
 
 function stableNumber(value) {
@@ -379,7 +403,39 @@ function stableNumber(value) {
   return hash >>> 0;
 }
 
-function chooseWanderTarget(petId, x, y) {
+function combinedWorkArea(areas) {
+  const workAreas = Array.isArray(areas) && areas.length
+    ? areas
+    : [screen.getPrimaryDisplay().workArea];
+  const left = Math.min(...workAreas.map((area) => area.x));
+  const top = Math.min(...workAreas.map((area) => area.y));
+  const right = Math.max(...workAreas.map((area) => area.x + area.width));
+  const bottom = Math.max(...workAreas.map((area) => area.y + area.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function workAreasForWander(window, pet) {
+  const [x, y] = window.getPosition();
+  const size = petWindowSize(pet);
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(x + size / 2),
+    y: Math.round(y + size / 2),
+  });
+  if (normalizePetBehavior(pet.behavior).stayOnMonitor) return [display.workArea];
+  const workAreas = screen.getAllDisplays().map((candidate) => candidate.workArea);
+  return workAreas.length ? workAreas : [display.workArea];
+}
+
+function chooseWanderTarget(pet, x, y, movementAreas) {
+  const petId = pet.id;
+  const behavior = normalizePetBehavior(pet.behavior);
+  const distanceRange = wanderDistanceRange(behavior.distance);
+  const workAreas = Array.isArray(movementAreas) && movementAreas.length
+    ? movementAreas
+    : [screen.getPrimaryDisplay().workArea];
+  const targetAreas = workAreas.map((area) => preferredAreaBounds(area, behavior.area));
+  const spriteSize = petSpriteSize(pet);
+  const inset = petWindowInset(pet);
   const now = Date.now();
   for (const [id, recent] of recentWanderDirections) {
     if (now - recent.startedAt > 6_000) recentWanderDirections.delete(id);
@@ -391,11 +447,19 @@ function chooseWanderTarget(petId, x, y) {
 
   for (let offset = 0; offset < WANDER_DIRECTIONS.length; offset += 1) {
     const direction = WANDER_DIRECTIONS[(firstDirection + offset) % WANDER_DIRECTIONS.length];
-    const distance = 175 + (stableNumber(`${petId}:${now}:${direction.key}`) % 170);
-    const target = {
+    const distance = distanceRange.minimum
+      + (stableNumber(`${petId}:${now}:${direction.key}`) % distanceRange.spread);
+    const rawTarget = {
       x: x + direction.x * distance,
       y: y + direction.y * distance,
     };
+    const target = nearestVisiblePositionInAreas(
+      rawTarget.x,
+      rawTarget.y,
+      targetAreas,
+      spriteSize,
+      inset,
+    );
     if (Math.hypot(target.x - x, target.y - y) < 44) continue;
     const choice = { target, direction: direction.key };
     if (!fallback) fallback = choice;
@@ -428,11 +492,13 @@ function initialPosition(pet) {
     return clampedPosition(pet.position.x, pet.position.y, pet);
   }
   const area = screen.getPrimaryDisplay().workArea;
+  const preferredArea = preferredAreaBounds(area, normalizePetBehavior(pet.behavior).area);
   const cascade = petWindows.size % 6;
-  return clampedPosition(
-    area.x + area.width - petWindowSize(pet) - 42 - cascade * 29,
-    area.y + area.height - petWindowSize(pet) - 60 - cascade * 27,
+  return clampedPositionInArea(
+    preferredArea.x + preferredArea.width - petWindowSize(pet) - 42 - cascade * 29,
+    preferredArea.y + preferredArea.height - petWindowSize(pet) - 60 - cascade * 27,
     pet,
+    preferredArea,
   );
 }
 
@@ -457,16 +523,11 @@ function stopGlide(petId, announceIdle = true) {
   if (announceIdle) sendPetAnimationState(petId, 'idle');
 }
 
-function glidePetWindow(petId, window, target, pet) {
+function glidePetWindow(petId, window, target, pet, areas) {
   stopGlide(petId, false);
   if (window.isDestroyed() || !window.isVisible()) return;
 
   const [startX, startY] = window.getPosition();
-  const windowSize = petWindowSize(pet);
-  const area = screen.getDisplayNearestPoint({
-    x: Math.round(startX + windowSize / 2),
-    y: Math.round(startY + windowSize / 2),
-  }).workArea;
   const direction = target.x < startX ? 'left' : 'right';
   sendPetAnimationState(petId, 'walk', direction);
   const duration = 1900 + Math.round(Math.random() * 700);
@@ -488,7 +549,7 @@ function glidePetWindow(petId, window, target, pet) {
       startX + (target.x - startX) * eased,
       startY + (target.y - startY) * eased,
       pet,
-      area,
+      areas,
     );
     window.setPosition(position.x, position.y, false);
     if (progress === 1) {
@@ -514,19 +575,13 @@ async function persistOpenPetPositions() {
 }
 
 function setPetShown(petId, shown) {
-  const window = petWindows.get(petId);
-  const hadWindowState = Boolean(window) && petWindowVisibility.has(window);
-  const previousWindowState = window ? petWindowVisibility.get(window) : undefined;
-  if (window) petWindowVisibility.set(window, Boolean(shown));
+  const visibilityOperation = petVisibility.begin(petId, shown);
   return changeStore((store) => {
     const pet = store.pets.find((item) => item.id === petId);
     if (!pet) throw new Error('That buddy could not be found.');
     pet.shown = Boolean(shown);
   }).catch((error) => {
-    if (window) {
-      if (hadWindowState) petWindowVisibility.set(window, previousWindowState);
-      else petWindowVisibility.delete(window);
-    }
+    petVisibility.rollback(visibilityOperation);
     throw error;
   });
 }
@@ -617,8 +672,10 @@ async function writeAnimationAssets(id, animations) {
 async function openPetWindow(id) {
   const existing = petWindows.get(id);
   if (existing && !existing.isDestroyed()) {
-    existing.show();
-    existing.focus();
+    if (petVisibility.get(id, true)) {
+      existing.show();
+      existing.focus();
+    }
     return;
   }
 
@@ -668,11 +725,8 @@ async function createPetWindow(id) {
   window.setAlwaysOnTop(true, 'screen-saver');
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   addSafeNavigation(window);
-  petWindowVisibility.set(window, pet.shown !== false);
   petWindows.set(id, window);
-  window.once('ready-to-show', () => {
-    if (!window.isDestroyed() && petWindowVisibility.get(window) !== false) window.showInactive();
-  });
+  installReadyToShowGate(window, () => petVisibility.get(id, pet.shown !== false));
   window.on('moved', () => schedulePositionSave(id, window));
   window.on('close', () => { persistPosition(id, window).catch(() => undefined); });
   window.on('closed', () => {
@@ -729,6 +783,7 @@ ipcMain.handle('pets:create', async (event, input) => {
     name: cleanPetName(input?.name),
     size: normalizePetSize(input?.size),
     motion: input?.motion === 'still' ? 'still' : 'wander',
+    behavior: normalizePetBehavior(input?.behavior),
     mimeType,
     imageFile: animationFiles.idle[0],
     animationFiles,
@@ -764,7 +819,11 @@ ipcMain.handle('pets:update', async (event, petId, input) => {
   const pet = await changeStore((store) => {
     const savedPet = store.pets.find((item) => item.id === petId);
     if (!savedPet) throw new Error('That buddy could not be found.');
-    Object.assign(savedPet, updates);
+    const { behavior: behaviorUpdates, ...ordinaryUpdates } = updates;
+    Object.assign(savedPet, ordinaryUpdates);
+    if (behaviorUpdates) {
+      savedPet.behavior = mergePetBehavior(savedPet.behavior, behaviorUpdates);
+    }
     return { ...savedPet };
   });
 
@@ -820,6 +879,7 @@ ipcMain.handle('pets:delete', async (event, petId) => {
   await changeStore((store) => {
     store.pets = store.pets.filter((item) => item.id !== petId);
   });
+  petVisibility.delete(petId);
   notifyPetsChanged();
   return true;
 });
@@ -837,7 +897,12 @@ ipcMain.handle('pet:drag-start', async (event, payload) => {
   stopGlide(petId, false);
   sendPetAnimationState(petId, 'walk');
   const [x, y] = window.getPosition();
-  dragOrigins.set(petId, { screenX, screenY, x, y, pet });
+  const behavior = normalizePetBehavior(pet.behavior);
+  const size = petWindowSize(pet);
+  const lockedArea = behavior.stayOnMonitor
+    ? screen.getDisplayNearestPoint({ x: Math.round(x + size / 2), y: Math.round(y + size / 2) }).workArea
+    : null;
+  dragOrigins.set(petId, { screenX, screenY, x, y, pet, lockedArea });
   return true;
 });
 
@@ -847,7 +912,11 @@ ipcMain.handle('pet:drag-move', (event, payload) => {
   const origin = dragOrigins.get(petId);
   if (!origin) return false;
   const { screenX, screenY } = dragCoordinates(payload);
-  const next = clampedPosition(origin.x + screenX - origin.screenX, origin.y + screenY - origin.screenY, origin.pet);
+  const targetX = origin.x + screenX - origin.screenX;
+  const targetY = origin.y + screenY - origin.screenY;
+  const next = origin.lockedArea
+    ? clampedPositionInArea(targetX, targetY, origin.pet, origin.lockedArea)
+    : clampedPosition(targetX, targetY, origin.pet);
   window.setPosition(next.x, next.y, false);
   return true;
 });
@@ -869,9 +938,10 @@ ipcMain.handle('pet:nudge', async (event, petId) => {
   if (dragOrigins.has(petId) || glideTimers.has(petId)) return { started: false, retryAfter: 1_800 };
   if (!claimWanderStart()) return { started: false, retryAfter: wanderRetryAfter() };
   const [x, y] = window.getPosition();
-  const next = chooseWanderTarget(petId, x, y);
+  const areas = workAreasForWander(window, pet);
+  const next = chooseWanderTarget(pet, x, y, areas);
   if (!next) return { started: false, retryAfter: wanderRetryAfter() };
-  glidePetWindow(petId, window, next, pet);
+  glidePetWindow(petId, window, next, pet, areas);
   return { started: true };
 });
 
@@ -895,10 +965,18 @@ function createTrayIcon() {
 
 async function showAllPets() {
   const store = await readStore();
-  await changeStore((nextStore) => {
-    for (const pet of nextStore.pets) pet.shown = true;
-  });
-  for (const window of petWindows.values()) petWindowVisibility.set(window, true);
+  const visibilityOperations = petVisibility.beginMany(store.pets.map((pet) => pet.id), true);
+  try {
+    await changeStore((nextStore) => {
+      petVisibility.beginMany(nextStore.pets.map((pet) => pet.id), true, visibilityOperations);
+      for (const pet of nextStore.pets) {
+        pet.shown = true;
+      }
+    });
+  } catch (error) {
+    for (const operation of visibilityOperations.values()) petVisibility.rollback(operation);
+    throw error;
+  }
   await Promise.all(store.pets.map(async (pet) => {
     try {
       await openPetWindow(pet.id);
@@ -910,21 +988,17 @@ async function showAllPets() {
 }
 
 async function hideAllPets() {
-  const previousWindowStates = [...petWindows.values()].map((window) => ({
-    window,
-    hadState: petWindowVisibility.has(window),
-    state: petWindowVisibility.get(window),
-  }));
-  for (const { window } of previousWindowStates) petWindowVisibility.set(window, false);
+  const store = await readStore();
+  const visibilityOperations = petVisibility.beginMany(store.pets.map((pet) => pet.id), false);
   try {
-    await changeStore((store) => {
-      for (const pet of store.pets) pet.shown = false;
+    await changeStore((nextStore) => {
+      petVisibility.beginMany(nextStore.pets.map((pet) => pet.id), false, visibilityOperations);
+      for (const pet of nextStore.pets) {
+        pet.shown = false;
+      }
     });
   } catch (error) {
-    for (const previous of previousWindowStates) {
-      if (previous.hadState) petWindowVisibility.set(previous.window, previous.state);
-      else petWindowVisibility.delete(previous.window);
-    }
+    for (const operation of visibilityOperations.values()) petVisibility.rollback(operation);
     throw error;
   }
   await persistOpenPetPositions();

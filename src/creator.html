@@ -173,6 +173,43 @@
             </div>
           </fieldset>
 
+          <fieldset class="behavior-settings">
+            <legend class="field-label">Walking behavior</legend>
+            <p class="behavior-copy">Choose how your buddy explores when Wanders is selected.</p>
+            <div class="behavior-grid">
+              <label for="behavior-frequency">
+                Walking frequency
+                <select id="behavior-frequency" name="behaviorFrequency">
+                  <option value="rare">Every so often</option>
+                  <option value="normal" selected>Regularly</option>
+                  <option value="often">Often</option>
+                </select>
+              </label>
+              <label for="behavior-distance">
+                Movement distance
+                <select id="behavior-distance" name="behaviorDistance">
+                  <option value="short">Short trips</option>
+                  <option value="normal" selected>Medium trips</option>
+                  <option value="long">Long trips</option>
+                </select>
+              </label>
+              <label for="behavior-area">
+                Preferred screen area
+                <select id="behavior-area" name="behaviorArea">
+                  <option value="anywhere" selected>Anywhere</option>
+                  <option value="top">Top</option>
+                  <option value="bottom">Bottom</option>
+                  <option value="left">Left side</option>
+                  <option value="right">Right side</option>
+                </select>
+              </label>
+            </div>
+            <label class="monitor-option" for="stay-on-monitor">
+              <input id="stay-on-monitor" name="stayOnMonitor" type="checkbox" />
+              <span><strong>Stay on this monitor</strong><small>Keep this buddy on the screen where it starts.</small></span>
+            </label>
+          </fieldset>
+
           <p id="form-message" class="form-message" role="status" aria-live="polite"></p>
           <button id="create-button" class="primary-button" type="submit">Create &amp; launch <span aria-hidden="true">→</span></button>
         </form>
@@ -216,6 +253,7 @@
       </section>
     </main>
     <script src="core.js"></script>
+    <script src="async-state.js"></script>
     <script src="creator.js"></script>
   </body>
 </html>

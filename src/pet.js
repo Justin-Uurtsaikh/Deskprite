@@ -1,4 +1,9 @@
-const { animationFramesForState, animationFrameAt } = window.DeskpriteCore;
+const {
+  animationFramesForState,
+  animationFrameAt,
+  normalizePetBehavior,
+  wanderDelayForBehavior,
+} = window.DeskpriteCore;
 
 const petId = new URLSearchParams(window.location.search).get('petId');
 const stage = document.querySelector('#stage');
@@ -38,10 +43,8 @@ function wanderDelay(initial, retryAfter = 0) {
   if (retryAfter > 0) {
     return retryAfter + 180 + (phase % 520) + Math.round(Math.random() * 450);
   }
-  if (initial) {
-    return 2_200 + (phase % 6_000) + Math.round(Math.random() * 850);
-  }
-  return 5_500 + (phase % 2_600) + Math.round(Math.random() * 7_200);
+  const frequency = normalizePetBehavior(pet?.behavior).frequency;
+  return wanderDelayForBehavior(frequency, initial, phase, Math.random());
 }
 
 function clearFrameTimer() {
